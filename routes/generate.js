@@ -75,7 +75,22 @@ router.post('/', authMiddleware, upload.single('image'), async (req, res) => {
     const imageUrl = await uploadToCloudinary(req.file.buffer);
     console.log('Image uploaded to Cloudinary:', imageUrl);
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
+    const callGeminiWithFallback = async (contents) => {
+      const candidateModels = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
+      let lastError;
+      for (const modelName of candidateModels) {
+        try {
+          const m = genAI.getGenerativeModel({ model: modelName });
+          const res = await m.generateContent(contents);
+          return res.response.text();
+        } catch (e) {
+          console.warn(`Model ${modelName} failed (${e.message}), trying next fallback...`);
+          lastError = e;
+        }
+      }
+      throw lastError;
+    };
+
     const imageData = {
       inlineData: {
         data: req.file.buffer.toString('base64'),
@@ -88,8 +103,7 @@ router.post('/', authMiddleware, upload.single('image'), async (req, res) => {
     let screenTitle = screenName;
 
     try {
-      const step1Result = await model.generateContent([COMPONENTS_PROMPT, imageData]);
-      const step1Text = step1Result.response.text();
+      const step1Text = await callGeminiWithFallback([COMPONENTS_PROMPT, imageData]);
       console.log('Gemini Step 1 raw:', step1Text.slice(0, 300));
       const step1Data = extractJSON(step1Text);
       components = step1Data.components || [];
@@ -103,8 +117,8 @@ router.post('/', authMiddleware, upload.single('image'), async (req, res) => {
     // 3. Step 2 — Generate Flutter code (plain text, no JSON wrapping)
     let flutterCode = '';
     try {
-      const step2Result = await model.generateContent(CODE_PROMPT(screenTitle, components));
-      flutterCode = step2Result.response.text()
+      const step2Text = await callGeminiWithFallback(CODE_PROMPT(screenTitle, components));
+      flutterCode = step2Text
         .replace(/```dart/gi, '')
         .replace(/```/g, '')
         .trim();
